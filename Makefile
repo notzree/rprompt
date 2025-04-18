@@ -40,3 +40,11 @@ release: clean release-darwin-arm64 release-darwin-amd64
 	@echo "Release artifacts created in ${RELEASE_DIR}/"
 	@echo "\nSHA256 checksums:"
 	@cd ${RELEASE_DIR} && shasum -a 256 *.tar.gz 
+
+
+test:
+	go test ./... -v
+
+
+
+

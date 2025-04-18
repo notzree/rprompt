@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/notzree/rprompt/v2/prompt/settings"
 	"github.com/urfave/cli/v3"
@@ -156,53 +157,18 @@ func generatePrompt(ctx context.Context, c *cli.Command) error {
 		return fmt.Errorf("failed to create prompt system: %w", err)
 	}
 
-	// Load the config
-	config, err := registry.LoadConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	// Create a builder with the template and config
-	builder, err := system.NewBuilder("cli",
-		WithTemplate(templatePath),
-		WithConfig(*config),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create builder: %w", err)
-	}
-
 	// Build the prompt
-	prompt, err := builder.Build()
+	prompt, err := system.Build(templatePath, configPath)
 	if err != nil {
-		// If there are missing fields, try to generate them
-		if missingErr, ok := err.(*MissingFieldsError); ok {
-			fmt.Printf("Missing fields detected: %s\n", missingErr.Error())
-			fmt.Println("Attempting to generate missing fields...")
+		// If there's an error, try to generate/fill missing config fields
+		if err := system.GenerateOrFillConfig(templatePath, configPath); err != nil {
+			return fmt.Errorf("failed to generate/fill config: %w", err)
+		}
 
-			if err := system.GenerateConfig(configPath, templatePath); err != nil {
-				return fmt.Errorf("failed to generate missing fields: %w", err)
-			}
-
-			// Retry with the updated config
-			config, err = registry.LoadConfig(configPath)
-			if err != nil {
-				return fmt.Errorf("failed to load updated config: %w", err)
-			}
-
-			builder, err = system.NewBuilder("cli",
-				WithTemplate(templatePath),
-				WithConfig(*config),
-			)
-			if err != nil {
-				return fmt.Errorf("failed to create builder with updated config: %w", err)
-			}
-
-			prompt, err = builder.Build()
-			if err != nil {
-				return fmt.Errorf("failed to build prompt with updated config: %w", err)
-			}
-		} else {
-			return fmt.Errorf("failed to build prompt: %w", err)
+		// Retry with the updated config
+		prompt, err = system.Build(templatePath, configPath)
+		if err != nil {
+			return fmt.Errorf("failed to build prompt with updated config: %w", err)
 		}
 	}
 
@@ -228,8 +194,8 @@ func generateConfig(ctx context.Context, c *cli.Command) error {
 		return fmt.Errorf("failed to create prompt system: %w", err)
 	}
 
-	if err := system.GenerateConfig(configPath, templatePath); err != nil {
-		return fmt.Errorf("failed to generate config: %w", err)
+	if err := system.GenerateOrFillConfig(templatePath, configPath); err != nil {
+		return fmt.Errorf("failed to generate/fill config: %w", err)
 	}
 
 	fmt.Printf("Successfully generated/updated config at: %s\n", configPath)
@@ -242,6 +208,9 @@ func newTemplate(ctx context.Context, c *cli.Command) error {
 	}
 
 	path := c.String("path")
+	if !strings.HasSuffix(path, ".tmpl") {
+		return fmt.Errorf("template must end in .tmpl")
+	}
 
 	fullPath := filepath.Join(registry.Directory, path)
 

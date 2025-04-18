@@ -34,7 +34,7 @@ func (r *LocalPromptRegistry) Find(path string) (*Template, error) {
 		return nil, err
 	}
 
-	return NewTemplate(path, string(fileBytes)), nil
+	return NewTemplate(path, string(fileBytes), r), nil
 }
 
 // LoadConfig loads a config file from the given path
