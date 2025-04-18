@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"text/template"
 	"text/template/parse"
@@ -64,6 +65,11 @@ func (t *Template) Parse(cfg Config) error {
 
 // GenerateConfig will generate an empty config based on the required variables
 func (t *Template) GenerateConfig(path string) (*Config, error) {
+	// First load all dependencies to ensure they are available for walking
+	if err := t.LoadDependencies(); err != nil {
+		return nil, fmt.Errorf("error loading dependencies: %w", err)
+	}
+
 	// Ensure we have a valid parse tree
 	if t.Tmpl.Tree == nil {
 		_, err := t.Tmpl.Parse(t.OriginalContent)
@@ -116,13 +122,47 @@ func (t *Template) walk(node parse.Node) map[string]any {
 	case *parse.RangeNode:
 		if n != nil {
 			if n.Pipe != nil {
-				if result, err := utils.MergeAsSet(data, extractVarsFromPipe(n.Pipe)); err == nil {
+				// Extract the range variable (e.g., .navigation.links)
+				rangeVars := extractVarsFromPipe(n.Pipe)
+				if result, err := utils.MergeAsSet(data, rangeVars); err == nil {
 					data = result
 				}
-			}
-			if n.List != nil {
-				if result, err := utils.MergeAsSet(data, t.walk(n.List)); err == nil {
-					data = result
+
+				// Also extract any variables used inside the range block
+				if n.List != nil {
+					// Find the range variable path
+					var rangePath []string
+					for _, cmd := range n.Pipe.Cmds {
+						for _, arg := range cmd.Args {
+							if field, ok := arg.(*parse.FieldNode); ok && len(field.Ident) > 0 {
+								// Skip the dot
+								start := 0
+								if field.Ident[0] == "." {
+									start = 1
+								}
+								rangePath = field.Ident[start:]
+								break
+							}
+						}
+					}
+
+					// If we found a range path, add the item structure to it
+					if len(rangePath) > 0 {
+						// Build the structure up to the range variable
+						current := data
+						for i := 0; i < len(rangePath)-1; i++ {
+							if _, ok := current[rangePath[i]]; !ok {
+								current[rangePath[i]] = make(map[string]any)
+							}
+							current = current[rangePath[i]].(map[string]any)
+						}
+
+						// Add an empty slice marker to the range variable
+						lastKey := rangePath[len(rangePath)-1]
+						if _, ok := current[lastKey]; !ok {
+							current[lastKey] = ""
+						}
+					}
 				}
 			}
 			if n.ElseList != nil {
@@ -169,6 +209,7 @@ func (t *Template) walk(node parse.Node) map[string]any {
 	case *parse.TemplateNode:
 		if n != nil {
 			templateName := n.Name
+			log.Printf("Recursively traversing %v", templateName)
 
 			// look up in the parent set
 			nestedTemplate := t.Tmpl.Lookup(templateName)
@@ -178,8 +219,28 @@ func (t *Template) walk(node parse.Node) map[string]any {
 				nestedTree := nestedTemplate.Tree
 
 				if nestedTree != nil && nestedTree.Root != nil {
-					// Walk the root node of the nested template
-					if result, err := utils.MergeAsSet(data, t.walk(nestedTree.Root)); err == nil {
+					// First find any dependencies this template might have
+					deps := findTemplateDependencies(nestedTree.Root)
+					log.Printf("DEPENDENCIES:%v", deps)
+
+					// Walk the template itself first
+					templateData := t.walk(nestedTree.Root)
+					log.Printf("Template %s own data: %v", templateName, templateData)
+
+					// Then walk each dependency and merge directly into main data
+					for _, depName := range deps {
+						if depTemplate := t.Tmpl.Lookup(depName); depTemplate != nil && depTemplate.Tree != nil {
+							depData := t.walk(depTemplate.Tree.Root)
+							log.Printf("Dependency %s data: %v", depName, depData)
+							if result, err := utils.MergeAsSet(data, depData); err == nil {
+								data = result
+							}
+						}
+					}
+
+					// Finally merge template's own data
+					if result, err := utils.MergeAsSet(data, templateData); err == nil {
+						log.Printf("Template %s final merged data: %v", templateName, data)
 						data = result
 					}
 				}
@@ -280,7 +341,8 @@ func (t *Template) LoadDependencies() error {
 
 	// Track templates we've already processed to avoid infinite recursion
 	processed := make(map[string]bool)
-	return t.loadDependenciesRecursive(processed)
+	err := t.loadDependenciesRecursive(processed)
+	return err
 }
 
 // loadDependenciesRecursive handles the actual recursive loading

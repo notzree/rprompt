@@ -467,3 +467,83 @@ func TestWithMockConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, reflect.DeepEqual(config.Config, loadedConfig.Config))
 }
+
+// Test GenerateConfig with nested template dependencies
+func TestGenerateConfig_WithNestedDependencies(t *testing.T) {
+	registry := &MockPromptRegistry{}
+
+	// Main template that includes header and footer
+	mainContent := `
+		[[template "header.tmpl" .]]
+		Welcome [[.content.message]]
+		[[template "footer.tmpl" .]]
+	`
+	mainTemplate := NewTemplate("main.tmpl", mainContent, registry)
+
+	// Header template that includes navigation
+	headerContent := `
+		[[template "navigation.tmpl" .]]
+		[[.header.title]]
+	`
+	headerTemplate := NewTemplate("header.tmpl", headerContent, registry)
+
+	// Navigation template with its own variables
+	// navContent := `
+	// 	[[range .navigation.links]]
+	// 	- [[.name]]: [[.url]]
+	// 	[[end]]
+	// `
+	navContent := `
+	[[.navigation.link]]
+`
+	navTemplate := NewTemplate("navigation.tmpl", navContent, registry)
+
+	// Footer template
+	footerContent := `
+		[[.footer.copyright]]
+		[[.footer.contact.email]]
+	`
+	footerTemplate := NewTemplate("footer.tmpl", footerContent, registry)
+
+	// Setup mock expectations
+	registry.On("Find", "header.tmpl").Return(headerTemplate, nil)
+	registry.On("Find", "navigation.tmpl").Return(navTemplate, nil)
+	registry.On("Find", "footer.tmpl").Return(footerTemplate, nil)
+
+	// First load dependencies
+	err := mainTemplate.LoadDependencies()
+	require.NoError(t, err)
+
+	// Generate config
+	config, err := mainTemplate.GenerateConfig("test_config.json")
+	require.NoError(t, err)
+
+	// Verify the config structure contains all expected fields
+	assert.Contains(t, config.Config, "content")
+	contentMap, ok := config.Config["content"].(map[string]any)
+	assert.True(t, ok)
+	assert.Contains(t, contentMap, "message")
+
+	assert.Contains(t, config.Config, "header")
+	headerMap, ok := config.Config["header"].(map[string]any)
+	assert.True(t, ok)
+	assert.Contains(t, headerMap, "title")
+
+	assert.Contains(t, config.Config, "navigation")
+	navMap, ok := config.Config["navigation"].(map[string]any)
+	assert.True(t, ok)
+	assert.Contains(t, navMap, "links")
+
+	assert.Contains(t, config.Config, "footer")
+	footerMap, ok := config.Config["footer"].(map[string]any)
+	assert.True(t, ok)
+	assert.Contains(t, footerMap, "copyright")
+	assert.Contains(t, footerMap, "contact")
+
+	contactMap, ok := footerMap["contact"].(map[string]any)
+	assert.True(t, ok)
+	assert.Contains(t, contactMap, "email")
+
+	// Verify all dependencies were loaded
+	registry.AssertExpectations(t)
+}
