@@ -73,6 +73,7 @@ func TestGenerateOrFillConfig(t *testing.T) {
 				template := &Template{
 					Path:            "template.tmpl",
 					OriginalContent: "Hello [[.name]]",
+					r:               m,
 				}
 				m.On("Find", "template.tmpl").Return(template, nil)
 
