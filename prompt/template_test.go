@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"text/template/parse"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -336,37 +337,96 @@ func TestWithLocalPromptRegistry(t *testing.T) {
 
 // Test extractVarsFromPipe
 func TestExtractVarsFromPipe(t *testing.T) {
-	// Since extractVarsFromPipe is not exported, we'll test it through Template.GenerateConfig
+	// Test simple field node
+	pipe := &parse.PipeNode{
+		Cmds: []*parse.CommandNode{
+			{
+				Args: []parse.Node{
+					&parse.FieldNode{
+						Ident: []string{".", "name"},
+					},
+				},
+			},
+		},
+	}
+	result := ExtractVarsFromPipe(pipe)
+	assert.Contains(t, result, "name")
 
-	// Simple field node
-	simpleTemplate := NewTemplate("simple.tmpl", "Hello [[.name]]", nil)
-	simpleConfig, err := simpleTemplate.GenerateConfig("")
-	require.NoError(t, err)
-	assert.Contains(t, simpleConfig.Config, "name")
-
-	// Nested field node
-	nestedTemplate := NewTemplate("nested.tmpl", "Hello [[.user.profile.name]]", nil)
-	nestedConfig, err := nestedTemplate.GenerateConfig("")
-	require.NoError(t, err)
-
-	assert.Contains(t, nestedConfig.Config, "user")
-	userMap, ok := nestedConfig.Config["user"].(map[string]any)
+	// Test nested field node
+	pipe = &parse.PipeNode{
+		Cmds: []*parse.CommandNode{
+			{
+				Args: []parse.Node{
+					&parse.FieldNode{
+						Ident: []string{".", "user", "profile", "name"},
+					},
+				},
+			},
+		},
+	}
+	result = ExtractVarsFromPipe(pipe)
+	assert.Contains(t, result, "user")
+	userMap, ok := result["user"].(map[string]any)
 	assert.True(t, ok)
-
 	assert.Contains(t, userMap, "profile")
 	profileMap, ok := userMap["profile"].(map[string]any)
 	assert.True(t, ok)
-
 	assert.Contains(t, profileMap, "name")
+
+	// Test variable node
+	pipe = &parse.PipeNode{
+		Cmds: []*parse.CommandNode{
+			{
+				Args: []parse.Node{
+					&parse.VariableNode{
+						Ident: []string{"var", "name"},
+					},
+				},
+			},
+		},
+	}
+	result = ExtractVarsFromPipe(pipe)
+	assert.Contains(t, result, "var")
+	varMap, ok := result["var"].(map[string]any)
+	assert.True(t, ok)
+	assert.Contains(t, varMap, "name")
+
+	// Test multiple commands
+	pipe = &parse.PipeNode{
+		Cmds: []*parse.CommandNode{
+			{
+				Args: []parse.Node{
+					&parse.FieldNode{
+						Ident: []string{".", "first"},
+					},
+				},
+			},
+			{
+				Args: []parse.Node{
+					&parse.FieldNode{
+						Ident: []string{".", "second"},
+					},
+				},
+			},
+		},
+	}
+	result = ExtractVarsFromPipe(pipe)
+	assert.Contains(t, result, "first")
+	assert.Contains(t, result, "second")
+
+	// Test nil pipe
+	result = ExtractVarsFromPipe(nil)
+	assert.Empty(t, result)
 }
 
 // Test buildNestedStructure
 func TestBuildNestedStructure(t *testing.T) {
 	// Since buildNestedStructure is not exported, we'll test through extractVarsFromPipe
 	// which we test through Template.GenerateConfig
+	registry := &MockPromptRegistry{}
 
 	// Test multiple nested levels
-	deepTemplate := NewTemplate("deep.tmpl", "[[.a.b.c.d.e]]", nil)
+	deepTemplate := NewTemplate("deep.tmpl", "[[.a.b.c.d.e]]", registry)
 	deepConfig, err := deepTemplate.GenerateConfig("")
 	require.NoError(t, err)
 
@@ -488,14 +548,12 @@ func TestGenerateConfig_WithNestedDependencies(t *testing.T) {
 	headerTemplate := NewTemplate("header.tmpl", headerContent, registry)
 
 	// Navigation template with its own variables
-	// navContent := `
-	// 	[[range .navigation.links]]
-	// 	- [[.name]]: [[.url]]
-	// 	[[end]]
-	// `
 	navContent := `
-	[[.navigation.link]]
-`
+		[[range .navigation.links]]
+		- [[.name]]: [[.url]]
+		[[end]]
+	`
+
 	navTemplate := NewTemplate("navigation.tmpl", navContent, registry)
 
 	// Footer template

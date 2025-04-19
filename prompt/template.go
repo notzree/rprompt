@@ -78,6 +78,7 @@ func (t *Template) GenerateConfig(path string) (*Config, error) {
 		}
 	}
 	data := t.walk(t.Tmpl.Tree.Root)
+	log.Printf("template %v has config data: %v", t.Tmpl.Name(), data)
 	return NewConfig(data, path), nil
 }
 
@@ -97,14 +98,14 @@ func (t *Template) walk(node parse.Node) map[string]any {
 		}
 	case *parse.ActionNode:
 		if n != nil && n.Pipe != nil {
-			if result, err := utils.MergeAsSet(data, extractVarsFromPipe(n.Pipe)); err == nil {
+			if result, err := utils.MergeAsSet(data, ExtractVarsFromPipe(n.Pipe)); err == nil {
 				data = result
 			}
 		}
 	case *parse.IfNode:
 		if n != nil {
 			if n.Pipe != nil {
-				if result, err := utils.MergeAsSet(data, extractVarsFromPipe(n.Pipe)); err == nil {
+				if result, err := utils.MergeAsSet(data, ExtractVarsFromPipe(n.Pipe)); err == nil {
 					data = result
 				}
 			}
@@ -123,7 +124,7 @@ func (t *Template) walk(node parse.Node) map[string]any {
 		if n != nil {
 			if n.Pipe != nil {
 				// Extract the range variable (e.g., .navigation.links)
-				rangeVars := extractVarsFromPipe(n.Pipe)
+				rangeVars := ExtractVarsFromPipe(n.Pipe)
 				if result, err := utils.MergeAsSet(data, rangeVars); err == nil {
 					data = result
 				}
@@ -175,7 +176,7 @@ func (t *Template) walk(node parse.Node) map[string]any {
 		if n != nil {
 			if n.Pipe != nil {
 				// Extract the variable being "with-ed"
-				withVars := extractVarsFromPipe(n.Pipe)
+				withVars := ExtractVarsFromPipe(n.Pipe)
 				if result, err := utils.MergeAsSet(data, withVars); err == nil {
 					data = result
 				}
@@ -221,17 +222,14 @@ func (t *Template) walk(node parse.Node) map[string]any {
 				if nestedTree != nil && nestedTree.Root != nil {
 					// First find any dependencies this template might have
 					deps := findTemplateDependencies(nestedTree.Root)
-					log.Printf("DEPENDENCIES:%v", deps)
 
 					// Walk the template itself first
 					templateData := t.walk(nestedTree.Root)
-					log.Printf("Template %s own data: %v", templateName, templateData)
 
 					// Then walk each dependency and merge directly into main data
 					for _, depName := range deps {
 						if depTemplate := t.Tmpl.Lookup(depName); depTemplate != nil && depTemplate.Tree != nil {
 							depData := t.walk(depTemplate.Tree.Root)
-							log.Printf("Dependency %s data: %v", depName, depData)
 							if result, err := utils.MergeAsSet(data, depData); err == nil {
 								data = result
 							}
@@ -240,7 +238,6 @@ func (t *Template) walk(node parse.Node) map[string]any {
 
 					// Finally merge template's own data
 					if result, err := utils.MergeAsSet(data, templateData); err == nil {
-						log.Printf("Template %s final merged data: %v", templateName, data)
 						data = result
 					}
 				}
@@ -248,7 +245,7 @@ func (t *Template) walk(node parse.Node) map[string]any {
 
 			// Also process any pipe parameters
 			if n.Pipe != nil {
-				if result, err := utils.MergeAsSet(data, extractVarsFromPipe(n.Pipe)); err == nil {
+				if result, err := utils.MergeAsSet(data, ExtractVarsFromPipe(n.Pipe)); err == nil {
 					data = result
 				}
 			}
@@ -257,8 +254,8 @@ func (t *Template) walk(node parse.Node) map[string]any {
 	return data
 }
 
-// extractVarsFromPipe extracts variables from pipe nodes and builds a nested structure
-func extractVarsFromPipe(pipe *parse.PipeNode) map[string]any {
+// ExtractVarsFromPipe extracts variables from pipe nodes and builds a nested structure
+func ExtractVarsFromPipe(pipe *parse.PipeNode) map[string]any {
 	data := make(map[string]any)
 	if pipe == nil {
 		return data
@@ -341,12 +338,13 @@ func (t *Template) LoadDependencies() error {
 
 	// Track templates we've already processed to avoid infinite recursion
 	processed := make(map[string]bool)
-	err := t.loadDependenciesRecursive(processed)
+	err := t.addDependenciesRecursive(processed, t)
+	log.Print(processed)
 	return err
 }
 
-// loadDependenciesRecursive handles the actual recursive loading
-func (t *Template) loadDependenciesRecursive(processed map[string]bool) error {
+// addDependenciesRecursive handles the actual recursive loading
+func (t *Template) addDependenciesRecursive(processed map[string]bool, globalParent *Template) error {
 	// Mark this template as processed
 	processed[t.Path] = true
 
@@ -360,6 +358,7 @@ func (t *Template) loadDependenciesRecursive(processed map[string]bool) error {
 
 	// Find all template dependencies
 	deps := findTemplateDependencies(t.Tmpl.Tree.Root)
+	log.Printf("Found dependencies for %s: %v", t.Path, deps)
 
 	// Load each dependency
 	for _, depName := range deps {
@@ -371,6 +370,7 @@ func (t *Template) loadDependenciesRecursive(processed map[string]bool) error {
 
 		// Skip if already processed
 		if processed[depPath] {
+			log.Printf("Skipping already processed template: %s", depPath)
 			continue
 		}
 
@@ -388,13 +388,14 @@ func (t *Template) loadDependenciesRecursive(processed map[string]bool) error {
 		}
 
 		// Add its parse tree to our template
-		_, err = t.Tmpl.AddParseTree(depName, depTemplate.Tmpl.Tree)
+		log.Printf("Adding parse tree for %s to root template %s", depName, t.Path)
+		_, err = globalParent.Tmpl.AddParseTree(depName, depTemplate.Tmpl.Tree)
 		if err != nil {
 			return fmt.Errorf("error adding template %s to set: %w", depName, err)
 		}
 
 		// Process this template's dependencies
-		err = depTemplate.loadDependenciesRecursive(processed)
+		err = depTemplate.addDependenciesRecursive(processed, globalParent)
 		if err != nil {
 			return err
 		}
